@@ -36,6 +36,10 @@ KLogOmega2DSourceTermProvider("KLogOmega2DSourceTerm");
 void KLogOmega2DSourceTerm::defineConfigOptions(Config::OptionList& options)
 {
   options.addConfigOption< bool >("LimitProductionTerm","Limit the production terms for stability (Default = True)");
+  options.addConfigOption< bool >("BlockDecoupledJacob","Block decouple ST Jacob in NS-KOmega-GammaRe blocks.");
+  options.addConfigOption< bool >("IsAxiSym","If axisymmetric, put to true.");
+  options.addConfigOption< bool >("IsSSTV","If using SST-V instead of SST-2003, put to true.");
+  options.addConfigOption< bool >("NeglectSSTVTerm","If using SST-Vm instead of SST-V, put to true.");
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -55,13 +59,28 @@ KLogOmega2DSourceTerm::KLogOmega2DSourceTerm(const std::string& name) :
     m_prodTerm_Omega(),
     m_destructionTerm_Omega(),
     m_destructionTerm_k(),
-    m_currWallDist(),
-    m_isAxisymmetric()
+    m_currWallDist()
 {
   addConfigOptionsTo(this);
   
   m_limitP = true;
   setParameter("LimitProductionTerm",&m_limitP);
+  
+  m_blockDecoupled = false;
+  setParameter("BlockDecoupledJacob",&m_blockDecoupled);
+  
+  m_isAxisymmetric = false;
+  setParameter("IsAxiSym",&m_isAxisymmetric);
+  
+  m_isSSTV = false;
+  setParameter("IsSSTV",&m_isSSTV);
+  
+  m_neglectSSTVTerm = false;
+  setParameter("NeglectSSTVTerm",&m_neglectSSTVTerm);
+  
+  m_overRadius = 1.0;
+  
+  m_vOverRadius = 0.0;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -88,6 +107,15 @@ void  KLogOmega2DSourceTerm::getSToStateJacobian(const CFuint iState)
   }
   
   SafePtr< NavierStokes2DKLogOmega > navierStokesVarSet = m_diffVarSet.d_castTo< NavierStokes2DKLogOmega >();
+  
+  // Set the wall distance before computing the turbulent viscosity
+  navierStokesVarSet->setWallDistance(m_currWallDist[iState]);
+  
+  if (m_isAxisymmetric)
+  {
+    m_overRadius = 1.0/max(((*m_cellStates)[iState]->getCoordinates())[YY],1.0e-4);
+    m_vOverRadius = m_overRadius*(*((*m_cellStates)[iState]))[2];
+  }
     
   /// destruction term of k
     
@@ -101,31 +129,62 @@ void  KLogOmega2DSourceTerm::getSToStateJacobian(const CFuint iState)
   const CFreal overRT = 1.0/(R*T);
   const CFreal pOverRTT = p/(R*T*T);
   const CFreal overOmega = 1.0/avOmega;
-    
+  const CFreal DkTerm = avOmega * betaStar;
+  const CFreal mut = navierStokesVarSet->getTurbDynViscosityFromGradientVars(*((*m_cellStates)[iState]), m_cellGrads[iState]);
+  
+  const CFreal Dk = -rho * avK * DkTerm;
+  
+  if (Dk < 0.0)
+  {
+ 
+  CFreal tempSTTerm = 0.0;
+  
+  if (!m_blockDecoupled)
+  {
   //p
-  m_stateJacobian[0][4] = -avOmega * avK * betaStar * overRT;
+  tempSTTerm = -avK * overRT * DkTerm;
+  m_stateJacobian[0][4] += tempSTTerm;
+  m_stateJacobian[0][3] -= tempSTTerm;
   
   //T
-  m_stateJacobian[3][4] = avOmega * avK * betaStar * pOverRTT;
+  tempSTTerm = DkTerm * avK * pOverRTT;
+  m_stateJacobian[3][4] += tempSTTerm;
+  m_stateJacobian[3][3] -= tempSTTerm;
+  }
   
   //k
-  m_stateJacobian[4][4] = -avOmega * betaStar * rho;
+  tempSTTerm = -DkTerm * rho;
+  m_stateJacobian[4][4] += tempSTTerm;
+  m_stateJacobian[4][3] -= tempSTTerm;
   
   //logOmega
-  m_stateJacobian[5][4] = -avOmega * avK * betaStar * rho;
+  tempSTTerm = -DkTerm * avK * rho;
+  m_stateJacobian[5][4] += tempSTTerm;
+  m_stateJacobian[5][3] -= tempSTTerm;
+  }
   
   /// destruction term of logOmega
   
   const CFreal beta = navierStokesVarSet->getBeta(*((*m_cellStates)[iState]));
   
+  const CFreal DomegaTerm = avOmega * beta;
+  
+  const CFreal Domega = -DomegaTerm * rho;
+  
+  if (Domega < 0.0)
+  {
+  if (!m_blockDecoupled)
+  {
   //p
-  m_stateJacobian[0][5] = -avOmega * beta * overRT;
+  m_stateJacobian[0][5] = -DomegaTerm * overRT;
   
   //T
-  m_stateJacobian[3][5] = avOmega * beta * pOverRTT;
+  m_stateJacobian[3][5] = DomegaTerm * pOverRTT;
+  }
   
   //logOmega
-  m_stateJacobian[5][5] = -avOmega * beta * rho;
+  m_stateJacobian[5][5] = -DomegaTerm * rho;
+  }
   
   /// production term of k
   
@@ -135,21 +194,80 @@ void  KLogOmega2DSourceTerm::getSToStateJacobian(const CFuint iState)
   const CFreal duy = (*(m_cellGrads[iState][uID]))[YY]; 
   const CFreal dvx = (*(m_cellGrads[iState][vID]))[XX]; 
   const CFreal dvy = (*(m_cellGrads[iState][vID]))[YY]; 
+  
+  const CFreal u = (*((*m_cellStates)[iState]))[1];
+  const CFreal v = (*((*m_cellStates)[iState]))[2];
+  
+  const CFreal gammaIsentropic = m_eulerVarSet->getModel()->getGamma();
 
   const CFreal coeffTauMu = navierStokesVarSet->getModel().getCoeffTau();
-  const CFreal mutTerm = coeffTauMu*((4./3.)*((dux-dvy)*(dux-dvy)+(dux*dvy))+(duy+dvx)*(duy+dvx));
+    
+  CFreal mutTerm;
+  CFreal Pk;
   
+  if (!m_isSSTV)
+  {
+    mutTerm = coeffTauMu*((4./3.)*((dux-dvy)*(dux-dvy)+(dux*dvy)-(dux+dvy-m_vOverRadius)*m_vOverRadius)+(duy+dvx)*(duy+dvx));
+
+    Pk = (mutTerm*mut - (2./3.)*(avK * rho)*(dux+dvy+m_vOverRadius));
+  }
+  else if (m_neglectSSTVTerm)
+  {
+    mutTerm = coeffTauMu*(duy-dvx)*(duy-dvx);
+
+    Pk = mutTerm*mut;  
+  }
+  else
+  {
+    mutTerm = coeffTauMu*(duy-dvx)*(duy-dvx);
+
+    Pk = (mutTerm*mut - (2./3.)*(avK * rho)*(dux+dvy+m_vOverRadius)); 
+  }
+  
+  const CFreal twoThirdduxduy = (2./3.)*(dux+dvy+m_vOverRadius);
+  
+  if (Pk > 0.0)
+  {
+  CFreal tempSTTerm = 0.0;
+      
+  if (!m_blockDecoupled)
+  {
   //p
-  m_stateJacobian[0][4] += mutTerm*avK*overRT*overOmega - (2./3.)*avK*(dux+dvy)*overRT;
+  tempSTTerm = mutTerm*avK*overRT*overOmega;
+  if (!m_neglectSSTVTerm) tempSTTerm += -twoThirdduxduy*avK*overRT;
+  
+  m_stateJacobian[0][4] += tempSTTerm;
+  m_stateJacobian[0][3] -= tempSTTerm;
   
   //T
-  m_stateJacobian[3][4] += (-mutTerm*avK*overOmega + (2./3.)*avK*(dux+dvy))*pOverRTT;
+  tempSTTerm = -mutTerm*avK*overOmega*pOverRTT;
+  if (!m_neglectSSTVTerm) tempSTTerm += twoThirdduxduy*avK*pOverRTT;
+  
+  m_stateJacobian[3][4] += tempSTTerm;
+  m_stateJacobian[3][3] -= tempSTTerm;
+  
+  if (m_isAxisymmetric && !m_isSSTV)
+      {
+        //v
+        tempSTTerm = mut*coeffTauMu*4./3.*m_overRadius*(-(dux+dvy)+v*2.0)- (2./3.)*(avK * rho)*m_overRadius;
+        m_stateJacobian[2][4] += tempSTTerm;
+        m_stateJacobian[2][3] -= tempSTTerm;
+      }
+  }
   
   //k
-  m_stateJacobian[4][4] += -(2./3.)*rho*(dux+dvy) + mutTerm*rho*overOmega;
+  tempSTTerm = mutTerm*rho*overOmega;
+  if (!m_neglectSSTVTerm) tempSTTerm += -twoThirdduxduy*rho;
+  
+  m_stateJacobian[4][4] += tempSTTerm;
+  m_stateJacobian[4][3] -= tempSTTerm;
   
   //logOmega
-  m_stateJacobian[5][4] +=  -mutTerm*rho*avK*overOmega;
+  tempSTTerm = -mutTerm*rho*avK*overOmega;
+  
+  m_stateJacobian[5][4] += tempSTTerm;
+  m_stateJacobian[5][3] -= tempSTTerm;
+  }
   
   /// production of logOmega
   
@@ -159,20 +277,80 @@ void  KLogOmega2DSourceTerm::getSToStateJacobian(const CFuint iState)
   
   const CFreal pOmegaFactor = (1. - blendingCoefF1) * 2. * sigmaOmega2* ((*(m_cellGrads[iState][4]))[XX]*(*(m_cellGrads[iState][5]))[XX] + (*(m_cellGrads[iState][4]))[YY]*(*(m_cellGrads[iState][5]))[YY]);
   
+  const CFreal Pomega = (gamma*rho/mut) * Pk * overOmega + rho * overOmega * pOmegaFactor;
+  
+  if (Pomega > 0.0)
+  {
+  if (!m_blockDecoupled)
+  {
   //p
-  m_stateJacobian[0][5] += gamma*(mutTerm*overRT*overOmega - (2./3.)*(dux+dvy)*overRT) + pOmegaFactor*overRT*overOmega;
+  m_stateJacobian[0][5] += gamma*(mutTerm*overRT*overOmega) + pOmegaFactor*overRT*overOmega;
+  if (!m_neglectSSTVTerm) m_stateJacobian[0][5] += -gamma*twoThirdduxduy*overRT;
   
   //T
-  m_stateJacobian[3][5] += gamma*pOverRTT*(-mutTerm*overOmega + (2./3.)*(dux+dvy)) - pOmegaFactor*pOverRTT*overOmega;
-  
-  //k
-  //m_stateJacobian[4][5] += 0.0;
-  
+  m_stateJacobian[3][5] += gamma*pOverRTT*(-mutTerm*overOmega) - pOmegaFactor*pOverRTT*overOmega;
+  if (!m_neglectSSTVTerm) m_stateJacobian[3][5] += gamma*pOverRTT*twoThirdduxduy;
+  }
+ 
   //logOmega
   m_stateJacobian[5][5] +=  -gamma*rho*mutTerm*overOmega - pOmegaFactor*rho*overOmega;
+  }
   
-  
-  
+  if (m_isAxisymmetric)
+  { 
+      const CFreal avV = sqrt((*((*m_cellStates)[iState]))[1]*(*((*m_cellStates)[iState]))[1]+(*((*m_cellStates)[iState]))[2]*(*((*m_cellStates)[iState]))[2]);
+
+      const CFreal mu = navierStokesVarSet->getLaminarDynViscosityFromGradientVars(*((*m_cellStates)[iState]));
+      
+      const CFreal rhovr = rho*v*m_overRadius;
+      const CFreal vrOverRT = v*m_overRadius*overRT;
+      const CFreal vrPOverRTT = v*m_overRadius*pOverRTT;
+      const CFreal rhor = m_overRadius*rho;
+      
+      const CFreal coeffTauMuAS = coeffTauMu*(mu+mut);
+      
+      //rho
+      m_stateJacobian[0][0] += -vrOverRT;
+      m_stateJacobian[2][0] += -rhor;
+      m_stateJacobian[3][0] += vrPOverRTT;
+      
+      //rho u
+      m_stateJacobian[0][1] += -vrOverRT*u;
+      m_stateJacobian[2][1] += -rhor*u;
+      m_stateJacobian[3][1] += vrPOverRTT*u;
+      m_stateJacobian[1][1] += -rhovr;
+      
+      //rho v
+      m_stateJacobian[0][2] += -vrOverRT*v;
+      m_stateJacobian[2][2] += -2.0*rhovr-m_overRadius*m_overRadius*2.0*coeffTauMuAS;
+      m_stateJacobian[3][2] += vrPOverRTT*v;
+      
+      //rho e
+      const CFreal isentropicTerm = gammaIsentropic/(gammaIsentropic-1.0);
+      m_stateJacobian[0][3] += -isentropicTerm*m_vOverRadius-0.5*avV*avV*vrOverRT;
+      m_stateJacobian[2][3] += -isentropicTerm*p*m_overRadius-0.5*(avV*avV+2.0*v*v)*rho*m_overRadius - 4.0/3.0*m_overRadius*m_overRadius*coeffTauMuAS*v;
+      m_stateJacobian[3][3] += 0.5*avV*avV*vrPOverRTT;
+      m_stateJacobian[1][3] += -rhovr*u;
+      
+      //rho k
+      if (!m_blockDecoupled)
+      {
+        m_stateJacobian[0][4] += -vrOverRT*avK;
+        m_stateJacobian[2][4] += -rhor*avK;
+        m_stateJacobian[3][4] += vrPOverRTT*avK;
+      }
+      m_stateJacobian[4][4] += -rhovr;
+      
+      //rho logOmega
+      const CFreal logOmega = (*((*m_cellStates)[iState]))[5];
+      if (!m_blockDecoupled)
+      {
+        m_stateJacobian[0][5] += -vrOverRT*logOmega;
+        m_stateJacobian[2][5] += -rhor*logOmega;
+        m_stateJacobian[3][5] += vrPOverRTT*logOmega;
+      }
+      m_stateJacobian[5][5] += -rhovr;
+  }
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
@@ -209,11 +387,14 @@ void  KLogOmega2DSourceTerm::getSToGradJacobian(const CFuint iState)
   const CFreal twoThirdRhoK = (2./3.)*(avK * rho);
   const CFreal mutTerm = coeffTauMu*((4./3.)*((dux-dvy)*(dux-dvy)+(dux*dvy))+(duy+dvx)*(duy+dvx));
   
+  if (!m_blockDecoupled)
+  {
   //p
   m_stateJacobian[0][4] += mutTerm*avK*overRT/avOmega - (2./3.)*avK*(dux+dvy)*coeffTauMu*overRT;
   
   //T
   m_stateJacobian[3][4] += -mutTerm*avK*p/(R*T*T*avOmega) + (2./3.)*avK*(dux+dvy)*coeffTauMu*p/(R*T*T);
+  }
   
   //k
   m_stateJacobian[4][4] += -(2./3.)*rho*(dux+dvy)*coeffTauMu + mutTerm*rho/avOmega;
@@ -228,11 +409,14 @@ void  KLogOmega2DSourceTerm::getSToGradJacobian(const CFuint iState)
   
   const CFreal pOmegaFactor = (1. - blendingCoefF1) * 2. * sigmaOmega2* ((*(m_cellGrads[iState][4]))[XX]*(*(m_cellGrads[iState][5]))[XX] + (*(m_cellGrads[iState][4]))[YY]*(*(m_cellGrads[iState][5]))[YY]);
   
+  if (!m_blockDecoupled)
+  {
   //p
   m_stateJacobian[0][5] += navierStokesVarSet->getGammaCoef()*(mutTerm*overRT/avOmega - (2./3.)*(dux+dvy)*coeffTauMu*overRT);
   
   //T
   m_stateJacobian[3][5] += navierStokesVarSet->getGammaCoef()*(-mutTerm*p/(R*T*T*avOmega) + (2./3.)*(dux+dvy)*coeffTauMu*p/(R*T*T));
+  }
   
   //k
   //m_stateJacobian[4][5] += 0.0;
@@ -268,9 +452,24 @@ void KLogOmega2DSourceTerm::computeProductionTerm(const CFuint iState,
   const CFreal coeffTauMu = navierStokesVarSet->getModel().getCoeffTau();
   const CFreal twoThirdRhoK = (2./3.)*(avK * rho);
   
-  KProdTerm = coeffTauMu*(MUT*((4./3.)*((dux-dvy)*(dux-dvy)+(dux*dvy))
+  if (!m_isSSTV)
+  {
+    KProdTerm = coeffTauMu*(MUT*((4./3.)*((dux-dvy)*(dux-dvy)+(dux*dvy)-(dux+dvy-m_vOverRadius)*m_vOverRadius)
 			       +(duy+dvx)*(duy+dvx)))
-                             -twoThirdRhoK*(dux+dvy);
+                             -twoThirdRhoK*(dux+dvy+m_vOverRadius);
+  }
+  else if (m_neglectSSTVTerm)
+  {
+    const CFreal vorticity2 = (duy-dvx)*(duy-dvx);
+
+    KProdTerm = coeffTauMu*MUT*vorticity2;  
+  }
+  else
+  {
+    const CFreal vorticity2 = (duy-dvx)*(duy-dvx);
+
+    KProdTerm = coeffTauMu*MUT*vorticity2 - twoThirdRhoK*(dux+dvy+m_vOverRadius);  
+  }
  
 //  KProdTerm = coeffTauMu*(MUT*((4./3.)*(dux*dux + dvy*dvy - dux*dvy) + duy*duy + dvx*dvx + 2*duy*dvx))
 //                             -twoThirdRhoK*(dux+dvy);
@@ -388,8 +587,14 @@ void KLogOmega2DSourceTerm::addSourceTerm(RealVector& resUpdates)
   const CFuint totalNbEqs = PhysicalModelStack::getActive()->getNbEq(); 
   
   for (CFuint iSol = 0; iSol < nbrStates; ++iSol)
-  {
+  {  
     m_eulerVarSet->computePhysicalData(*((*m_cellStates)[iSol]), m_solPhysData);
+    
+    if (m_isAxisymmetric)
+    {
+      m_overRadius = 1.0/max(((*m_cellStates)[iSol]->getCoordinates())[YY],1.0e-4);
+      m_vOverRadius = m_overRadius*m_solPhysData[EulerTerm::VY];
+    }
       
     // Set the wall distance before computing the turbulent viscosity
     navierStokesVarSet->setWallDistance(m_currWallDist[iSol]);
@@ -409,6 +614,57 @@ void KLogOmega2DSourceTerm::addSourceTerm(RealVector& resUpdates)
     
     resUpdates[m_nbrEqs*iSol + 3] = -m_prodTerm_k - m_destructionTerm_k;
     
+    if (m_isAxisymmetric)
+    {   
+      const CFuint uID = 1;//getStateVelocityIDs()[XX];
+      const CFuint vID = 2;//getStateVelocityIDs()[YY];
+      const CFreal dux = (*(m_cellGrads[iSol][uID]))[XX];
+      const CFreal duy = (*(m_cellGrads[iSol][uID]))[YY]; 
+      const CFreal dvx = (*(m_cellGrads[iSol][vID]))[XX]; 
+      const CFreal dvy = (*(m_cellGrads[iSol][vID]))[YY]; 
+  
+      const CFuint nbScalarEqsSets = m_eulerVarSet->getModel()->getNbScalarVarSets();
+      const CFuint iK = m_eulerVarSet->getModel()->getFirstScalarVar(nbScalarEqsSets-1);
+      const CFreal rho = navierStokesVarSet->getDensity(*((*m_cellStates)[iSol]));
+      const CFreal avK = max(m_solPhysData[iK],0.0);
+      const CFreal coeffTauMu = navierStokesVarSet->getModel().getCoeffTau();
+      
+      const CFreal mu = navierStokesVarSet->getLaminarDynViscosityFromGradientVars(*((*m_cellStates)[iSol]));
+  
+      const CFreal rhovr = rho*m_vOverRadius;
+      
+      const CFreal divV = dux + dvy;
+      const CFreal lambdaQ = navierStokesVarSet->getThermConductivity(*((*m_cellStates)[iSol]), mu + mut * navierStokesVarSet->getModel().getPrOverPrT());
+      const CFreal coeffTauMuAS = coeffTauMu*(mu+mut);
+      const CFreal tauRX = coeffTauMuAS*(duy + dvx);
+      const CFreal tauRR = coeffTauMuAS*(2.*dvy - 2.0/3.0*(divV + m_vOverRadius));
+      const CFreal tauTT = -coeffTauMuAS*2.0/3.0*(divV - 2.*m_vOverRadius);
+      const CFreal qr = -navierStokesVarSet->getModel().getCoeffQ()*lambdaQ*(*(m_cellGrads[iSol][3]))[YY];
+      
+      const CFreal u = m_solPhysData[EulerTerm::VX];
+      const CFreal v = m_solPhysData[EulerTerm::VY];
+      
+      const CFuint iKPD = m_eulerVarSet->getModel()->getFirstScalarVar(0);
+      
+      //rho
+      resUpdates[m_nbrEqs*iSol + 0] = -rhovr;
+      
+      //rho u
+      resUpdates[m_nbrEqs*iSol + 1] = -rhovr*u + m_overRadius*tauRX;
+      
+      //rho v
+      resUpdates[m_nbrEqs*iSol + 2] = -rhovr*v + m_overRadius*(tauRR - tauTT);
+      
+      //rho e
+      resUpdates[m_nbrEqs*iSol + 3] += -rhovr*m_solPhysData[EulerTerm::H] + m_overRadius*(-qr + tauRX*u + tauRR*v);
+      
+      //rho k
+      resUpdates[m_nbrEqs*iSol + 4] += -rhovr*avK + m_overRadius*(mu+navierStokesVarSet->getSigmaK()*mut)*(*(m_cellGrads[iSol][kID]))[YY];
+      
+      //rho logOmega
+      resUpdates[m_nbrEqs*iSol + 5] += -rhovr*m_solPhysData[iKPD+1] + m_overRadius*(mu+navierStokesVarSet->getSigmaOmega()*mut)*(*(m_cellGrads[iSol][omegaID]))[YY];
+    }
+    
     if (!m_isPerturbed)
     {
       // store the shear stress velocity
@@ -423,7 +679,7 @@ void KLogOmega2DSourceTerm::addSourceTerm(RealVector& resUpdates)
       const CFreal dUdY = (*(m_cellGrads[iSol][1]))[YY];
             
       // take the absolute value of dUdY to avoid nan which causes tecplot to be unable to load the file
-      wallShearStressVelocity[(((*m_cellStates)[iSol]))->getLocalID()] = sqrt(nuTot*fabs(dUdY));//m_prodTerm_Omega;//std::min(m_prodTerm_Omega,200.0);//m_prodTerm_Omega;//
+      wallShearStressVelocity[(((*m_cellStates)[iSol]))->getLocalID()] = mut;//sqrt(nuTot*fabs(dUdY));//m_prodTerm_Omega;//std::min(m_prodTerm_Omega,200.0);//m_prodTerm_Omega;//
       
       
       

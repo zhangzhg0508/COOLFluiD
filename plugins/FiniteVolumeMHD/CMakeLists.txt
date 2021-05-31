@@ -10,6 +10,8 @@ AUSMFluxMHD.cxx
 AUSMFluxMHD.hh
 AUSMPWFluxMHD.ci 
 AUSMPWFluxMHD.hh
+ComputeFieldFromPotentialMHD.cxx
+ComputeFieldFromPotentialMHD.hh
 FiniteVolumeMHD.hh
 MHD3DCoriolisCentrifugalForcesSourceTerm.hh
 MHD3DProjectionCoriolisCentrifugalForcesSourceTerm.hh
@@ -99,6 +101,8 @@ UnsteadyMHD3DProjectionPhotosphere.hh
 UnsteadyMHD3DProjectionPhotosphere.cxx
 UnsteadyMHD3DProjectionPolytropicPhotosphere.hh
 UnsteadyMHD3DProjectionPolytropicPhotosphere.cxx
+Venktn3DStrict.cxx
+Venktn3DStrict.hh
 )
 
 IF ( NOT CF_HAVE_SINGLE_EXEC )

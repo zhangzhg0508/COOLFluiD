@@ -12,6 +12,14 @@ Euler2DGammaAlphaPuvtToCons.cxx
 Euler2DGammaAlphaPuvtToCons.hh
 Euler2DGammaAlphaPuvtToConsInPuvt.cxx
 Euler2DGammaAlphaPuvtToConsInPuvt.hh
+Euler3DGammaAlphaConsToPuvtInPuvt.cxx
+Euler3DGammaAlphaConsToPuvtInPuvt.hh
+Euler3DGammaAlphaPuvtToCons.cxx
+Euler3DGammaAlphaPuvtToCons.hh
+Euler3DGammaAlphaPuvt.cxx
+Euler3DGammaAlphaPuvt.hh
+Euler3DGammaAlphaCons.cxx
+Euler3DGammaAlphaCons.hh
 NavierStokes2DGammaAlphaBSLPuvt.cxx
 NavierStokes2DGammaAlphaBSLPuvt.hh
 NavierStokes2DGammaAlphaPuvt.cxx
@@ -21,6 +29,12 @@ NavierStokes2DGammaAlphaSSTPuvt.hh
 NavierStokesGammaAlphaPhysicalModel.ci
 NavierStokesGammaAlphaPhysicalModel.cxx
 NavierStokesGammaAlphaPhysicalModel.hh
+NavierStokes3DGammaAlphaPuvt.cxx
+NavierStokes3DGammaAlphaPuvt.hh
+NavierStokes3DGammaAlphaBSLPuvt.cxx
+NavierStokes3DGammaAlphaBSLPuvt.hh
+NavierStokes3DGammaAlphaSSTPuvt.cxx
+NavierStokes3DGammaAlphaSSTPuvt.hh
 )
 
 LIST ( APPEND GammaAlpha_cflibs NavierStokes KOmega SA)

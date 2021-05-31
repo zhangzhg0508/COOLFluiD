@@ -45,7 +45,6 @@ void NavierStokesGReKO2DSourceTerm_Lang::defineConfigOptions(Config::OptionList&
  options.addConfigOption< bool >("Decouple","Decouple y-ReTheta from k and log(omega), simply solving as fully turbulent.");
  options.addConfigOption< bool >("LimPRe","Limit P_Re.");
  options.addConfigOption< bool >("AddUpdateCoeff","Add the ST time step restriction.");
- options.addConfigOption< bool >("BlockDecoupledJacob","Block decouple ST Jacob in NS-KOmega-GammaRe blocks.");
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -86,9 +85,6 @@ NavierStokesGReKO2DSourceTerm_Lang::NavierStokesGReKO2DSourceTerm_Lang(const std
   
   m_addUpdateCoeff = false;
   setParameter("AddUpdateCoeff",&m_addUpdateCoeff);
-  
-  m_blockDecoupled = false;
-  setParameter("BlockDecoupledJacob",&m_blockDecoupled);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -193,6 +189,16 @@ void  NavierStokesGReKO2DSourceTerm_Lang::getSToStateJacobian(const CFuint iStat
   
   const CFreal mu = navierStokesVarSet->getLaminarDynViscosityFromGradientVars(*((*m_cellStates)[iState]));
   const CFreal mut = navierStokesVarSet->getTurbDynViscosityFromGradientVars(*((*m_cellStates)[iState]), m_cellGrads[iState]);
+  
+  if (m_isAxisymmetric)
+  {
+    m_overRadius = 1.0/max(((*m_cellStates)[iState]->getCoordinates())[YY],1.0e-4);
+    m_vOverRadius = m_overRadius*(*((*m_cellStates)[iState]))[2];
+  }
+  
+  const CFreal u = (*((*m_cellStates)[iState]))[1];
+  const CFreal v = (*((*m_cellStates)[iState]))[2];
+  const CFreal gammaIsentropic = m_eulerVarSet->getModel()->getGamma();
   
   //Compute _Retheta_C
   getRethetac(avRe);
@@ -311,11 +317,33 @@ void  NavierStokesGReKO2DSourceTerm_Lang::getSToStateJacobian(const CFuint iStat
   const CFreal dvy = (*(m_cellGrads[iState][vID]))[YY]; 
 
   const CFreal coeffTauMu = navierStokesVarSet->getModel().getCoeffTau();
-  const CFreal mutTerm = coeffTauMu*((4./3.)*((dux-dvy)*(dux-dvy)+(dux*dvy))+(duy+dvx)*(duy+dvx));
+  //const CFreal mutTerm = coeffTauMu*((4./3.)*((dux-dvy)*(dux-dvy)+(dux*dvy))+(duy+dvx)*(duy+dvx));
   
-  const CFreal Pk = (mutTerm*mut - (2./3.)*(avK * rho)*(dux+dvy));
+  CFreal mutTerm;
+  CFreal Pk;
   
-  const CFreal twoThirdduxduy = (2./3.)*(dux+dvy);
+  if (!m_isSSTV)
+  {
+    mutTerm = coeffTauMu*((4./3.)*((dux-dvy)*(dux-dvy)+(dux*dvy))+(duy+dvx)*(duy+dvx)-(dux+dvy-m_vOverRadius)*m_vOverRadius);
+
+    Pk = (mutTerm*mut - (2./3.)*(avK * rho)*(dux+dvy+m_vOverRadius));
+  }
+  else if (m_neglectSSTVTerm)
+  {
+    mutTerm = coeffTauMu*(duy-dvx)*(duy-dvx);
+
+    Pk = mutTerm*mut;  
+  }
+  else
+  {
+    mutTerm = coeffTauMu*(duy-dvx)*(duy-dvx);
+
+    Pk = (mutTerm*mut - (2./3.)*(avK * rho)*(dux+dvy+m_vOverRadius)); 
+  }
+  
+  //const CFreal Pk = (mutTerm*mut - (2./3.)*(avK * rho)*(dux+dvy));
+  
+  const CFreal twoThirdduxduy = (2./3.)*(dux+dvy+m_vOverRadius);
   
   if (Pk*gammaEff > 0.0)
   {
@@ -324,23 +352,38 @@ void  NavierStokesGReKO2DSourceTerm_Lang::getSToStateJacobian(const CFuint iStat
   if (!m_blockDecoupled)
   {
   //p
-  tempSTTerm = (mutTerm*avK*overRT*overOmega - twoThirdduxduy*avK*overRT) * gammaEff;
+  tempSTTerm = mutTerm*avK*overRT*overOmega * gammaEff;
+  if (!m_neglectSSTVTerm) tempSTTerm += -twoThirdduxduy*avK*overRT * gammaEff;
+  
   m_stateJacobian[0][4] += tempSTTerm;
   m_stateJacobian[0][3] -= tempSTTerm;
   
   //T
-  tempSTTerm = (-mutTerm*avK*overOmega + twoThirdduxduy*avK)*pOverRTT * gammaEff;
+  tempSTTerm = -mutTerm*avK*overOmega*pOverRTT * gammaEff;
+  if (!m_neglectSSTVTerm) tempSTTerm += twoThirdduxduy*avK*pOverRTT * gammaEff;
+  
   m_stateJacobian[3][4] += tempSTTerm;
   m_stateJacobian[3][3] -= tempSTTerm;
  
   //gamma
-  tempSTTerm = mutTerm*mut-twoThirdduxduy * avK * rho;
+  tempSTTerm = mutTerm*mut;
+  if (!m_neglectSSTVTerm) tempSTTerm += -twoThirdduxduy * avK * rho;
   m_stateJacobian[6][4] += tempSTTerm;
   m_stateJacobian[6][3] -= tempSTTerm;
+  
+  if (m_isAxisymmetric && !m_isSSTV)
+      {
+        //v
+        tempSTTerm = mut*coeffTauMu*4./3.*m_overRadius*(-(dux+dvy)+v*2.0)*gammaEff- (2./3.)*(avK * rho * gammaEff)*m_overRadius;
+        m_stateJacobian[2][4] += tempSTTerm;
+        m_stateJacobian[2][3] -= tempSTTerm;
+      }
   }
   
   //k
-  tempSTTerm = (-twoThirdduxduy*rho + mutTerm*rho*overOmega) * gammaEff;
+  tempSTTerm = mutTerm*rho*overOmega * gammaEff;
+  if (!m_neglectSSTVTerm) tempSTTerm += -twoThirdduxduy*rho * gammaEff;
+  
   m_stateJacobian[4][4] += tempSTTerm;
   m_stateJacobian[4][3] -= tempSTTerm;
   
@@ -518,6 +561,76 @@ void  NavierStokesGReKO2DSourceTerm_Lang::getSToStateJacobian(const CFuint iStat
   }
   }
   
+  if (m_isAxisymmetric)
+  { 
+      const CFreal rhovr = rho*v*m_overRadius;
+      const CFreal vrOverRT = v*m_overRadius*overRT;
+      const CFreal vrPOverRTT = v*m_overRadius*pOverRTT;
+      const CFreal rhor = m_overRadius*rho;
+      
+      const CFreal coeffTauMuAS = coeffTauMu*(mu+mut);
+      
+      //rho
+      m_stateJacobian[0][0] += -vrOverRT;
+      m_stateJacobian[2][0] += -rhor;
+      m_stateJacobian[3][0] += vrPOverRTT;
+      
+      //rho u
+      m_stateJacobian[0][1] += -vrOverRT*u;
+      m_stateJacobian[2][1] += -rhor*u;
+      m_stateJacobian[3][1] += vrPOverRTT*u;
+      m_stateJacobian[1][1] += -rhovr;
+      
+      //rho v
+      m_stateJacobian[0][2] += -vrOverRT*v;
+      m_stateJacobian[2][2] += -2.0*rhovr-m_overRadius*m_overRadius*2.0*coeffTauMuAS;
+      m_stateJacobian[3][2] += vrPOverRTT*v;
+      
+      //rho e
+      const CFreal isentropicTerm = gammaIsentropic/(gammaIsentropic-1.0);
+      m_stateJacobian[0][3] += -isentropicTerm*m_vOverRadius-0.5*avV*avV*vrOverRT;
+      m_stateJacobian[2][3] += -isentropicTerm*p*m_overRadius-0.5*(avV*avV+2.0*v*v)*rho*m_overRadius - 4.0/3.0*m_overRadius*m_overRadius*coeffTauMuAS*v;
+      m_stateJacobian[3][3] += 0.5*avV*avV*vrPOverRTT;
+      m_stateJacobian[1][3] += -rhovr*u;
+      
+      //rho k
+      if (!m_blockDecoupled)
+      {
+        m_stateJacobian[0][4] += -vrOverRT*avK;
+        m_stateJacobian[2][4] += -rhor*avK;
+        m_stateJacobian[3][4] += vrPOverRTT*avK;
+      }
+      m_stateJacobian[4][4] += -rhovr;
+      
+      //rho logOmega
+      const CFreal logOmega = (*((*m_cellStates)[iState]))[5];
+      if (!m_blockDecoupled)
+      {
+        m_stateJacobian[0][5] += -vrOverRT*logOmega;
+        m_stateJacobian[2][5] += -rhor*logOmega;
+        m_stateJacobian[3][5] += vrPOverRTT*logOmega;
+      }
+      m_stateJacobian[5][5] += -rhovr;
+      
+      //rho gamma
+      if (!m_blockDecoupled)
+      {
+        m_stateJacobian[0][6] += -vrOverRT*avGa;
+        m_stateJacobian[2][6] += -rhor*avGa;
+        m_stateJacobian[3][6] += vrPOverRTT*avGa;
+      }
+      m_stateJacobian[6][6] += -rhovr;
+      
+      //rho Re
+      if (!m_blockDecoupled)
+      {
+        m_stateJacobian[0][7] += -vrOverRT*avRe;
+        m_stateJacobian[2][7] += -rhor*avRe;
+        m_stateJacobian[3][7] += vrPOverRTT*avRe;
+      }
+      m_stateJacobian[7][7] += -rhovr;
+  }
+  
   if (m_addUpdateCoeff)
   {
   DataHandle<CFreal> updateCoeff = socket_updateCoeff.getDataHandle();
@@ -575,7 +688,7 @@ void  NavierStokesGReKO2DSourceTerm_Lang::getStrain(const CFreal VoverRadius, co
   const CFreal gradV_X = (*(m_cellGrads[iState][2]))[XX];
   const CFreal gradV_Y = (*(m_cellGrads[iState][2]))[YY];
   const CFreal gradSum = (gradU_Y + gradV_X);
-  const CFreal strain = gradU_X*gradU_X + 0.5*gradSum*gradSum + gradV_Y*gradV_Y + VoverRadius ;
+  const CFreal strain = gradU_X*gradU_X + 0.5*gradSum*gradSum + gradV_Y*gradV_Y + VoverRadius*VoverRadius ;
   m_strain = std::sqrt(2.*strain);
 }
 
@@ -639,6 +752,12 @@ void NavierStokesGReKO2DSourceTerm_Lang::addSourceTerm(RealVector& resUpdates)
     
     navierStokesVarSet->computeBlendingCoefFromGradientVars(*((*m_cellStates)[iSol]), *(m_cellGrads[iSol][kID]), *(m_cellGrads[iSol][omegaID]));
     
+    if (m_isAxisymmetric)
+    {
+      m_overRadius = 1.0/max(((*m_cellStates)[iSol]->getCoordinates())[YY],1.0e-4);
+      m_vOverRadius = m_overRadius*m_solPhysData[EulerTerm::VY];
+    }
+    
     // Get Vorticity
     getVorticity(iSol);
 
@@ -651,7 +770,7 @@ void NavierStokesGReKO2DSourceTerm_Lang::addSourceTerm(RealVector& resUpdates)
     
     ///Compute the blending function Fthetat
     const CFreal  Rew         = (rho * m_currWallDist[iSol] * m_currWallDist[iSol] * avOmega)/(mu);   
-    const CFreal  Fwake1      = (1e-5 * Rew)*(1e-5 * Rew);   
+    const CFreal  Fwake1      = (1.0e-5 * Rew)*(1.0e-5 * Rew);   
     const CFreal  Fwake       = exp(-Fwake1);
     const CFreal  thetaBL     = (avRe*mu)/(rho*avV);
     const CFreal  deltaBL     = (0.5*15*thetaBL);
@@ -688,7 +807,7 @@ void NavierStokesGReKO2DSourceTerm_Lang::addSourceTerm(RealVector& resUpdates)
     getRethetac(avRe);
   
     //Compute Strain 
-    getStrain(0.0,iSol);//_vOverRadius); 
+    getStrain(m_vOverRadius,iSol);//_vOverRadius); 
     
     //compute Gasep
     const CFreal Rt         = (rho*avK)/(mu*avOmega);
@@ -759,10 +878,29 @@ void NavierStokesGReKO2DSourceTerm_Lang::addSourceTerm(RealVector& resUpdates)
 
     const CFreal coeffTauMu = navierStokesVarSet->getModel().getCoeffTau();
     const CFreal twoThirdRhoK = (2./3.)*(avK * rho);
+    
+    if (!m_isSSTV)
+    {
+      m_prodTerm_k = coeffTauMu*(mut*((4./3.)*((dux-dvy)*(dux-dvy)+(dux*dvy)-(dux+dvy-m_vOverRadius)*m_vOverRadius)
+			       +(duy+dvx)*(duy+dvx)))
+                             -twoThirdRhoK*(dux+dvy+m_vOverRadius);
+    }
+    else if (m_neglectSSTVTerm)
+    {
+      const CFreal vorticity2 = (duy-dvx)*(duy-dvx);
+
+      m_prodTerm_k = coeffTauMu*mut*vorticity2;  
+    }
+    else
+    {
+      const CFreal vorticity2 = (duy-dvx)*(duy-dvx);
+
+      m_prodTerm_k = coeffTauMu*mut*vorticity2 - twoThirdRhoK*(dux+dvy+m_vOverRadius);  
+    }
   
-    m_prodTerm_k = coeffTauMu*(mut*((4./3.)*((dux-dvy)*(dux-dvy)+(dux*dvy))
-			         +(duy+dvx)*(duy+dvx)))
-                                 -twoThirdRhoK*(dux+dvy);
+//    m_prodTerm_k = coeffTauMu*(mut*((4./3.)*((dux-dvy)*(dux-dvy)+(dux*dvy))
+//			         +(duy+dvx)*(duy+dvx)))
+//                                 -twoThirdRhoK*(dux+dvy);
   
     ///Production term: Omega
     const CFreal blendingCoefF1 = navierStokesVarSet->getBlendingCoefficientF1();
@@ -843,6 +981,46 @@ void NavierStokesGReKO2DSourceTerm_Lang::addSourceTerm(RealVector& resUpdates)
     resUpdates[m_nbrEqs*iSol + ReTID] = prodTerm_Re + destructionTerm_Re;
     
     resUpdates[m_nbrEqs*iSol + 3] = -m_prodTerm_k - m_destructionTerm_k;
+    
+    if (m_isAxisymmetric)
+    { 
+      const CFreal rhovr = rho*m_vOverRadius;
+      
+      const CFreal u = m_solPhysData[EulerTerm::VX];
+      const CFreal v = m_solPhysData[EulerTerm::VY];
+      
+      const CFreal divV = dux + dvy;
+      const CFreal lambdaQ = navierStokesVarSet->getThermConductivity(*((*m_cellStates)[iSol]), mu + mut * navierStokesVarSet->getModel().getPrOverPrT());
+      const CFreal coeffTauMuAS = coeffTauMu*(mu+mut);
+      const CFreal tauRX = coeffTauMuAS*(duy + dvx);
+      const CFreal tauRR = coeffTauMuAS*(2.*dvy - 2.0/3.0*(divV + m_vOverRadius));
+      const CFreal tauTT = -coeffTauMuAS*2.0/3.0*(divV - 2.*m_vOverRadius);
+      const CFreal qr = -navierStokesVarSet->getModel().getCoeffQ()*lambdaQ*(*(m_cellGrads[iSol][3]))[YY];
+      
+      //rho
+      resUpdates[m_nbrEqs*iSol + 0] = -rhovr;
+      
+      //rho u
+      resUpdates[m_nbrEqs*iSol + 1] = -rhovr*u + m_overRadius*tauRX;
+      
+      //rho v
+      resUpdates[m_nbrEqs*iSol + 2] = -rhovr*v + m_overRadius*(tauRR - tauTT);
+      
+      //rho e
+      resUpdates[m_nbrEqs*iSol + 3] += -rhovr*m_solPhysData[EulerTerm::H] + m_overRadius*(-qr + tauRX*u + tauRR*v);
+      
+      //rho k
+      resUpdates[m_nbrEqs*iSol + 4] += -rhovr*avK + m_overRadius*(mu+navierStokesVarSet->getSigmaK()*mut)*(*(m_cellGrads[iSol][kID]))[YY];
+      
+      //rho logOmega
+      resUpdates[m_nbrEqs*iSol + 5] += -rhovr*m_solPhysData[iKPD+1] + m_overRadius*(mu+navierStokesVarSet->getSigmaOmega()*mut)*(*(m_cellGrads[iSol][omegaID]))[YY];
+      
+      //rho gamma
+      resUpdates[m_nbrEqs*iSol + 6] += -rhovr*avGa + m_overRadius*(mu+mut)*(*(m_cellGrads[iSol][kID+2]))[YY];
+      
+      //rho Re
+      resUpdates[m_nbrEqs*iSol + 7] += -rhovr*avRe + m_overRadius*2.0*(mu+mut)*(*(m_cellGrads[iSol][kID+3]))[YY];
+    }
     
     if (!m_isPerturbed)
     {

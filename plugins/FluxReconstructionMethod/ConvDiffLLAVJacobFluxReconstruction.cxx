@@ -109,7 +109,10 @@ ConvDiffLLAVJacobFluxReconstruction::ConvDiffLLAVJacobFluxReconstruction(const s
   m_llavFluxJacobian(),
   m_llavRiemannFluxJacobian(),
   m_dampCoeffDiff(),
-  m_contFlxWoLLAV()
+  m_contFlxWoLLAV(),
+  m_updateToSolutionVecTrans(CFNULL),
+  m_tempSolVarState(),
+  m_tempSolVarState2()
   {
     addConfigOptionsTo(this);
     
@@ -1534,11 +1537,14 @@ void ConvDiffLLAVJacobFluxReconstruction::computeLLAVRiemannFluxJacobianAna(cons
       }
       
       for (CFuint iVar = 0; iVar < m_nbrEqs; ++iVar)
-      {
+      {     
+        m_tempSolVarState = static_cast<RealVector&>(*m_updateToSolutionVecTrans->transform(m_cellStatesFlxPnt[LEFT][iFlx]));
+        m_tempSolVarState2 = static_cast<RealVector&>(*m_updateToSolutionVecTrans->transform(m_cellStatesFlxPnt[RIGHT][iFlx]));
+    
         *(m_avgGradAV[iVar]) = (*(m_cellGradFlxPntAV[LEFT][iFlx][iVar]) + *(m_cellGradFlxPntAV[RIGHT][iFlx][iVar]))/2.0;
         
         // compute damping term for LLAV
-        const RealVector dGradVarXNormalAV = ((*(m_cellStatesFlxPnt[LEFT][iFlx]))[iVar] - (*(m_cellStatesFlxPnt[RIGHT][iFlx]))[iVar])*m_unitNormalFlxPnts[iFlx];
+        const RealVector dGradVarXNormalAV = (m_tempSolVarState[iVar] - m_tempSolVarState2[iVar])*m_unitNormalFlxPnts[iFlx];
         *m_avgGradAV[iVar] -= dampFactor*dGradVarXNormalAV;
             
         CFreal q_n = 0.0;
@@ -3504,6 +3510,10 @@ void ConvDiffLLAVJacobFluxReconstruction::setup()
   // get cell-node connectivity
   m_cellNodesConn = MeshDataStack::getActive()->getConnectivity("cellNodes_InnerCells");
   
+  m_updateToSolutionVecTrans = getMethodData().getUpdateToSolutionVecTrans();
+  
+  m_updateToSolutionVecTrans->setup(2);
+  
   // get the local spectral FD data
   vector< FluxReconstructionElementData* >& frLocalData = getMethodData().getFRLocalData();
   cf_assert(frLocalData.size() > 0);
@@ -3550,6 +3560,8 @@ void ConvDiffLLAVJacobFluxReconstruction::setup()
   // get damping coeff
   m_dampCoeffDiff = getMethodData().getDiffDampCoefficient();
   
+  m_tempSolVarState.resize(m_nbrEqs);
+  m_tempSolVarState2.resize(m_nbrEqs);
   m_nodeEpsilons.resize(nbrNodes);
   m_nbNodeNeighbors.resize(nbrNodes);
   m_cellEpsilons.resize(nbrCells);

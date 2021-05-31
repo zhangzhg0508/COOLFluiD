@@ -159,6 +159,20 @@ protected: // data
   
   // boolean telling whether the source terms need to be limited for stability
   bool m_limitP;
+  bool m_blockDecoupled;
+  
+  // one over the radius in an axisymmetric case
+  CFreal m_overRadius;
+  
+  // v over radius in an axisymmetric case
+  CFreal m_vOverRadius;
+  
+  // flag to use SST-V instead of SST-2003
+  bool m_isSSTV;
+  
+  // flag to neglect SST-V dudx term, so SST-Vm will be used
+  bool m_neglectSSTVTerm;
+  
 
   
 }; // class KLogOmega2DSourceTerm

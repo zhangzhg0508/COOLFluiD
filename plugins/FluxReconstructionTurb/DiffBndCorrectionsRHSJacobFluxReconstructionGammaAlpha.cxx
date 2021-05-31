@@ -100,8 +100,54 @@ void DiffBndCorrectionsRHSJacobFluxReconstructionGammaAlpha::computeFlxPntStates
     
     const CFreal muTot = navierStokesVarSet->getDynViscosity(*(m_cellStatesFlxPnt[iFlxPnt]), m_cellGradFlxPnt[iFlxPnt]);
     
-    const CFreal tau = muTot*(m_unitNormalFlxPnts[iFlxPnt][YY]*MathFunctions::innerProd(*(m_cellGradFlxPnt[iFlxPnt][1]),m_unitNormalFlxPnts[iFlxPnt]) -
-                       m_unitNormalFlxPnts[iFlxPnt][XX]*MathFunctions::innerProd(*(m_cellGradFlxPnt[iFlxPnt][2]),m_unitNormalFlxPnts[iFlxPnt]));
+//    const CFreal tau = muTot*(m_unitNormalFlxPnts[iFlxPnt][YY]*MathFunctions::innerProd(*(m_cellGradFlxPnt[iFlxPnt][1]),m_unitNormalFlxPnts[iFlxPnt]) -
+//                       m_unitNormalFlxPnts[iFlxPnt][XX]*MathFunctions::innerProd(*(m_cellGradFlxPnt[iFlxPnt][2]),m_unitNormalFlxPnts[iFlxPnt]));
+    
+    CFreal tau = 0.0;
+    
+    if (m_dim == 2)
+    {
+      tau = muTot*(m_unitNormalFlxPnts[iFlxPnt][YY]*MathFunctions::innerProd(*(m_cellGradFlxPnt[iFlxPnt][1]),m_unitNormalFlxPnts[iFlxPnt]) -
+            m_unitNormalFlxPnts[iFlxPnt][XX]*MathFunctions::innerProd(*(m_cellGradFlxPnt[iFlxPnt][2]),m_unitNormalFlxPnts[iFlxPnt]));
+    }
+    else if (fabs(m_unitNormalFlxPnts[iFlxPnt][ZZ]) <= fabs(m_unitNormalFlxPnts[iFlxPnt][XX]))
+    {
+      const CFreal nx1 = m_unitNormalFlxPnts[iFlxPnt][YY];
+      const CFreal ny1 = -m_unitNormalFlxPnts[iFlxPnt][XX];
+      const CFreal nsize1 = sqrt(nx1*nx1+ny1*ny1);
+      
+      const CFreal tauT1 = muTot*(nx1*MathFunctions::innerProd(*(m_cellGradFlxPnt[iFlxPnt][1]),m_unitNormalFlxPnts[iFlxPnt]) +
+                           ny1*MathFunctions::innerProd(*(m_cellGradFlxPnt[iFlxPnt][2]),m_unitNormalFlxPnts[iFlxPnt]))/nsize1;
+      
+      const CFreal nx2 = m_unitNormalFlxPnts[iFlxPnt][XX]*m_unitNormalFlxPnts[iFlxPnt][ZZ];
+      const CFreal ny2 = m_unitNormalFlxPnts[iFlxPnt][YY]*m_unitNormalFlxPnts[iFlxPnt][ZZ];
+      const CFreal nz2 = -(m_unitNormalFlxPnts[iFlxPnt][XX]*m_unitNormalFlxPnts[iFlxPnt][XX]+m_unitNormalFlxPnts[iFlxPnt][YY]*m_unitNormalFlxPnts[iFlxPnt][YY]);
+      const CFreal nsize2 = sqrt(nx2*nx2+ny2*ny2+nz2*nz2);
+      
+      const CFreal tauT2 = muTot*(nx2*MathFunctions::innerProd(*(m_cellGradFlxPnt[iFlxPnt][1]),m_unitNormalFlxPnts[iFlxPnt]) +
+                           ny2*MathFunctions::innerProd(*(m_cellGradFlxPnt[iFlxPnt][2]),m_unitNormalFlxPnts[iFlxPnt]) + 
+                           nz2*MathFunctions::innerProd(*(m_cellGradFlxPnt[iFlxPnt][3]),m_unitNormalFlxPnts[iFlxPnt]))/nsize2;
+      tau = sqrt(tauT1*tauT1+tauT2*tauT2);
+    }
+    else
+    {
+      const CFreal ny1 = -m_unitNormalFlxPnts[iFlxPnt][ZZ];
+      const CFreal nz1 = m_unitNormalFlxPnts[iFlxPnt][YY];
+      const CFreal nsize1 = sqrt(ny1*ny1+nz1*nz1);
+      
+      const CFreal tauT1 = muTot*(ny1*MathFunctions::innerProd(*(m_cellGradFlxPnt[iFlxPnt][2]),m_unitNormalFlxPnts[iFlxPnt]) +
+                           nz1*MathFunctions::innerProd(*(m_cellGradFlxPnt[iFlxPnt][3]),m_unitNormalFlxPnts[iFlxPnt]))/nsize1;
+      
+      const CFreal nx2 = m_unitNormalFlxPnts[iFlxPnt][YY]*m_unitNormalFlxPnts[iFlxPnt][YY]+m_unitNormalFlxPnts[iFlxPnt][ZZ]*m_unitNormalFlxPnts[iFlxPnt][ZZ];
+      const CFreal ny2 = -m_unitNormalFlxPnts[iFlxPnt][XX]*m_unitNormalFlxPnts[iFlxPnt][YY];
+      const CFreal nz2 = -m_unitNormalFlxPnts[iFlxPnt][XX]*m_unitNormalFlxPnts[iFlxPnt][ZZ];
+      const CFreal nsize2 = sqrt(nx2*nx2+ny2*ny2+nz2*nz2);
+      
+      const CFreal tauT2 = muTot*(ny2*MathFunctions::innerProd(*(m_cellGradFlxPnt[iFlxPnt][2]),m_unitNormalFlxPnts[iFlxPnt]) +
+                           nz2*MathFunctions::innerProd(*(m_cellGradFlxPnt[iFlxPnt][3]),m_unitNormalFlxPnts[iFlxPnt]) + 
+                           nx2*MathFunctions::innerProd(*(m_cellGradFlxPnt[iFlxPnt][1]),m_unitNormalFlxPnts[iFlxPnt]))/nsize2;
+      tau = sqrt(tauT1*tauT1+tauT2*tauT2);
+    }
     
     const CFreal tauCrit = tau/sqrt(rho*muTot);
     
